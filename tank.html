@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tank</title>
+    <style>
+        .crt::before {
+            content: " ";
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 2;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+
+<body class="crt">
+    <script src="../../littlejs/littlejs.min.js"></script>
+    <script src="../../lib/utils.js"></script>
+    <script>
+        'use strict';
+
+        // Game constants
+        const CANVAS_SIZE = vec2(720, 720);
+        const LEVEL_SIZE = vec2(100, 100);
+        const TANK_SIZE = vec2(7);  // Reduced size
+        const TANK_SPEED = 0.1;
+        const BULLET_SIZE = vec2(3, 3);
+        const BULLET_SPEED = 0.5;
+        const WIN_SCORE = 3;
+        const ROTATION_SPEED = 0.05;
+        const GAME_DURATION = 30;
+
+        const DEFAULT_WORDS = [
+            { word: "戦車", reading: "せんしゃ", definition: "tank" },
+        ];
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const data = urlParams.get('data');
+        const WORDS = (data ? JSON.parse(data) : DEFAULT_WORDS);
+
+        if (!WORDS.length) {
+            endGame();
+        }
+
+        const word = WORDS[0];
+        const DEFINITION_TEXT = word.definition;
+        const TARGET_TEXT = word.word;
+        const READING_TEXT = word.reading;
+
+        let player, aiTank;
+        let playerScore = 0;
+        let aiScore = 0;
+        let bullets = [];
+        let obstacles = [];
+        let gameWon = false;
+        let gameOver = false;
+        let gameTimer = 0;
+
+        function loadFont() {
+            const style = document.createElement('style');
+            style.textContent = `
+            @font-face {
+                font-family: 'Jiskan24';
+                src: url('/fonts/jf-dot/JF-Dot-jiskan24.ttf');
+                font-weight: 100 900;
+            }
+        `;
+            style.id = 'Jiskan24';
+            if (!document.head.querySelector('#Jiskan24'))
+                document.head.appendChild(style);
+        }
+
+        // Cannon Class
+        class Cannon extends EngineObject {
+            constructor(tank, length = 7, width = 1.5, color = new Color(0, 0, 0)) {
+                super(tank.pos, vec2(length, width));
+                this.tank = tank;
+                this.length = length;
+                this.width = width;
+                this.color = color;
+                this.renderOrder = 1;
+            }
+
+            update() {
+                this.pos = this.tank.pos.add(vec2(this.length * 0.6, 0).rotate(this.tank.angle));
+                this.tank.stuck = this.isCannonTouchingObstacle()
+            }
+
+            render() {
+                // Render the cannon as a line extending from the tank
+                const cannonEnd = this.tank.pos.add(vec2(this.length, 0).rotate(this.tank.angle));
+                drawLine(this.tank.pos, cannonEnd, this.width, this.color);
+            }
+
+            isCannonTouchingObstacle(tank) {
+                // Calculate the position of the cannon's tip
+                const cannonTip = this.tank.pos.add(vec2(this.tank.cannon.length, 0).rotate(this.tank.angle));
+
+                // Check if the cannon's tip is touching any obstacle
+                for (const obstacle of obstacles) {
+                    if (isOverlapping(obstacle.pos, obstacle.size, cannonTip, vec2(0.1))) {
+                        return true; // The cannon is touching an obstacle
+                    }
+                }
+                return false; // The cannon is not touching any obstacle
+            }
+        }
+
+        class Tank extends EngineObject {
+            constructor(pos, color, isAI) {
+                super(pos, TANK_SIZE);
+                this.color = color;
+                this.isAI = isAI;
+                this.angle = isAI ? PI : 0;
+                this.fireCooldown = 0;
+                this.cannon = new Cannon(this, TANK_SIZE.x * 1.2, 2, color);
+                this.addChild(this.cannon)
+                this.setCollision();
+                this.stuck = false;
+                this.targetPos = null;
+                this.renderOrder = 1
+                this.particle = null;
+            }
+
+            update() {
+                super.update();
+                this.velocity = this.velocity.scale(0.9);
+                this.fireCooldown -= timeDelta;
+
+                if (this.isAI) {
+                    this.aiBehavior();
+                } else {
+                    this.handleInput();
+                }
+                this.checkBoundaries();
+            }
+
+            render() {
+                drawRect(this.pos, this.size, this.color);
+                // Render text on tank
+                const text = this.isAI ? TARGET_TEXT : READING_TEXT;
+                drawText(text, this.pos, 4, new Color(0, 0, 0), 0.1, new Color(1, 1, 1), 'center', 'Jiskan24');
+            }
+
+            handleInput() {
+                // Rotate the tank
+                if (keyIsDown(37)) this.angle += ROTATION_SPEED; // Left arrow (rotate counterclockwise)
+                if (keyIsDown(39)) this.angle -= ROTATION_SPEED; // Right arrow (rotate clockwise)
+
+                // Move tank forward
+                if (keyIsDown(90) && !this.stuck) { // Z key
+                    const direction = vec2(1, 0).rotate(this.angle);
+                    this.pos = this.pos.add(direction.scale(TANK_SPEED));
+                }
+
+                // Player shoot with X key
+                if (keyWasPressed(88) && !this.stuck && this.fireCooldown <= 0) { // X key for shooting
+                    this.shoot();
+                    this.fireCooldown = 1.5;
+                }
+            }
+
+            angleDifference(angleA, angleB) {
+                let diff = (angleB - angleA + Math.PI) % (2 * Math.PI) - Math.PI;
+                return diff < -Math.PI ? diff + 2 * Math.PI : diff;
+            }
+
+            aiBehavior() {
+                let diff = player.pos.subtract(this.pos)
+                const targetAngle = (2 * PI + vec2(diff.y, diff.x).angle()) % (2 * PI)
+                this.angle += clamp(targetAngle - this.angle, -ROTATION_SPEED, ROTATION_SPEED)
+
+                let shoot = true
+                while (diff.length() > 10) {
+                    diff = diff.scale(0.9)
+                    for (let obstacle of obstacles) {
+                        if (isOverlapping(obstacle.pos, obstacle.size, this.pos.add(diff), vec2(3))) {
+                            shoot = false
+                        }
+                    }
+                }
+
+                if (this.targetPos?.distance(this.pos) > 30) {
+                    const dir = this.targetPos.subtract(this.pos).normalize()
+                    this.velocity = dir.normalize().scale(TANK_SPEED)
+                } else {
+                    if (!this.aiMoveTimer)
+                        this.aiMoveTimer = new Timer(3)
+                    else if (this.aiMoveTimer.elapsed()) {
+                        const closest = obstacles[Math.floor(Math.random() * obstacles.length)]
+                        this.targetPos = closest.pos.add(closest.pos.subtract(player.pos).normalize().scale(5))
+                        this.aiMoveTimer = null
+                    }
+                }
+
+                if (shoot && this.fireCooldown <= 0) {
+                    this.shoot()
+                    this.fireCooldown = 1.5
+                }
+            }
+
+            shoot() {
+                const bulletPos = this.pos.add(vec2(TANK_SIZE.x * 0.6, 0).rotate(this.angle));
+                const dir = vec2(1, 0).rotate(this.angle)
+                this.applyForce(dir.scale(-1))
+                bullets.push(new Bullet(bulletPos, dir, this));
+            }
+
+            checkBoundaries() {
+                this.pos.x = clamp(this.pos.x, TANK_SIZE.x / 2, LEVEL_SIZE.x - TANK_SIZE.x / 2);
+                this.pos.y = clamp(this.pos.y, TANK_SIZE.y / 2, LEVEL_SIZE.y - TANK_SIZE.y / 2);
+                this.angle = (2 * PI + this.angle) % (2 * PI)
+            }
+
+            destroy() {
+                const color = this.color;
+                if (!this.particle) {
+                    this.particle = new ParticleEmitter(
+                        this.pos, 0,                          // pos, angle
+                        10, 0.1, 100, PI,                  // emitSize, emitTime, emitRate, emiteCone
+                        0,                               // tileIndex
+                        color, color,                    // colorStartA, colorStartB
+                        color.scale(1, 0), color.scale(1, 0), // colorEndA, colorEndB
+                        .2, 2, .2, .1, .05,              // time, sizeStart, sizeEnd, speed, angleSpeed
+                        .99, 1, .5, PI,                  // damping, angleDamping, gravity, cone
+                        .1, .5, 0, 0,                     // fadeRate, randomness, collide, additive
+                        0, 10, 0                         // randomColorLinear, renderOrder, localSpace
+                    );
+                    this.particle.renderOrder = 10
+                }
+
+                super.destroy()
+            }
+        }
+
+        // Bullet class
+        class Bullet extends EngineObject {
+            constructor(pos, direction, owner) {
+                super(pos, BULLET_SIZE);
+                this.direction = direction;
+                this.owner = owner;
+                this.velocity = this.direction.scale(BULLET_SPEED);
+                this.elasticity = 1
+                this.setCollision()
+                this.cooldown = new Timer(0.05)
+            }
+
+            update() {
+                super.update();
+
+                // Check if bullet goes out of bounds
+                if (this.pos.x < 0 || this.pos.x > LEVEL_SIZE.x || this.pos.y < 0 || this.pos.y > LEVEL_SIZE.y) {
+                    this.destroy();
+                }
+
+                // End game if someone wins
+                if (!gameOver && playerScore >= WIN_SCORE) {
+                    gameWon = true;
+                    aiTank.destroy();
+                    setTimeout(endGame, 2000);
+                }
+
+                if (!gameWon && aiScore >= WIN_SCORE) {
+                    gameOver = true;
+                    player.destroy();
+                    setTimeout(endGame, 2000);
+                }
+            }
+
+            render() {
+                if (this.cooldown.active()) return;
+                drawRect(this.pos, this.size, new Color(1, 1, 0));
+            }
+
+            collideWithObject(object) {
+                if (object instanceof Bullet || this.cooldown.active()) return false
+                if (object instanceof Tank) {
+                    if (!gameOver && !gameWon && !this.cooldown.active()) {
+                        if (object === player)
+                            ++aiScore
+                        else
+                            ++playerScore
+                        this.destroy()
+                    }
+                    return false;
+                }
+                return true
+            }
+
+            destroy() {
+                bullets = bullets.filter(b => b !== this);
+                super.destroy();
+            }
+        }
+
+        // Obstacle class
+        class Obstacle extends EngineObject {
+            constructor(pos) {
+                super(pos, vec2(10, 10));  // Static size for obstacles
+                this.setCollision()
+                this.mass = 0
+            }
+
+            render() {
+                drawRect(this.pos, this.size, new Color(0.5, 0.5, 0.5));
+            }
+        }
+
+        function gameInit() {
+            loadFont();
+            canvasFixedSize = CANVAS_SIZE;
+            cameraPos = LEVEL_SIZE.scale(0.5);
+            cameraScale = CANVAS_SIZE.x / LEVEL_SIZE.x;
+
+            player = new Tank(vec2(20), new Color(0, 1, 0), false);  // Player tank
+            aiTank = new Tank(vec2(80), new Color(1, 0, 0), true);  // AI tank
+
+            // Create some obstacles
+            obstacles.push(new Obstacle(vec2(50, 50)));
+            obstacles.push(new Obstacle(vec2(30, 70)));
+            obstacles.push(new Obstacle(vec2(70, 30)));
+        }
+
+        function gameUpdate() {
+            if (!gameOver) {
+                gameTimer += timeDelta;
+                if (gameTimer >= GAME_DURATION) {
+                    gameOver = true;
+                    setTimeout(endGame, 1500);
+                }
+            }
+        }
+
+        function gameRender() {
+            // Draw background
+            drawRect(cameraPos, LEVEL_SIZE, new Color(0.8, 0.8, 0.8));
+
+            // Draw score
+            drawTextScreen(`Player: ${playerScore} / AI: ${aiScore}`, vec2(20, 20), 20, new Color(0, 0, 0), 0, undefined, 'left', 'Jiskan24');
+
+            // Draw definition text at the bottom
+            const blockLetterSize = calculateBlockLetterSize();
+            drawText(DEFINITION_TEXT, vec2(LEVEL_SIZE.x / 2, blockLetterSize / 2), blockLetterSize, new Color(0.2, 0.2, 0.2), 0, new Color(), 'center', 'Jiskan24');
+
+            // Draw gameplay instructions at the top
+            drawTextScreen("Arrow keys: Rotate, Z: Move, X: Shoot", vec2(CANVAS_SIZE.x - 200, 20), 20, new Color(0, 0, 0), 0, undefined, 'center', 'Jiskan24');
+
+            drawTextScreen(`Time: ${(GAME_DURATION - gameTimer).toFixed(1)}s`, vec2(CANVAS_SIZE.x - 70, 60), 20, new Color(0, 0, 0), 0, undefined, 'right', 'Jiskan24');
+
+            // Game over screen
+            if (gameWon || gameOver) {
+                const message = !gameOver && playerScore >= WIN_SCORE ? "You Win!" : "Game Over!";
+                drawTextScreen(message, CANVAS_SIZE.scale(0.5), 48, new Color(0, 0, 0), 0, undefined, 'center', 'Jiskan24');
+            }
+        }
+
+        function calculateBlockLetterSize() {
+            const maxWidth = LEVEL_SIZE.x * 0.9;
+            const maxHeight = LEVEL_SIZE.y * 0.2;
+            const aspectRatio = DEFINITION_TEXT.length / 2;
+
+            let size = maxHeight;
+            if (size * aspectRatio > maxWidth) {
+                size = maxWidth / aspectRatio;
+            }
+
+            return size;
+        }
+
+        function endGame() {
+            window.parent.postMessage('close', 'http://localhost:8000');
+        }
+
+        // Start the game engine
+        engineInit(gameInit, gameUpdate, () => { }, gameRender, () => { });
+    </script>
+</body>
+
+</html>
