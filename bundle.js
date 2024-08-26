@@ -9048,7 +9048,7 @@
 	            left: keyIsDown('ArrowLeft'),
 	            right: keyIsDown('ArrowRight'),
 	            up: keyIsDown('KeyZ'),
-	            shoot: keyWasPressed('KeyX'),
+	            shoot: keyIsDown('KeyX'),
 	        };
 	        if (!compareInput(input, lastInput)) {
 	            lastInput = input;
