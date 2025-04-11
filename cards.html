@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Japanese Flashcard Review App</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #bb86fc;
+            --known-color: #03dac6;
+            --unknown-color: #cf6679;
+            --button-hover: #2c2c2c;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        
+        header {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        h1 {
+            color: var(--accent-color);
+            margin-bottom: 10px;
+        }
+        
+        .stats {
+            display: flex;
+            margin-bottom: 20px;
+            gap: 20px;
+        }
+        
+        .stat {
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            padding: 10px 20px;
+            text-align: center;
+            min-width: 100px;
+        }
+        
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            margin-top: 5px;
+            color: var(--accent-color);
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        button {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+            border: none;
+            border-radius: 8px;
+            padding: 10px 16px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.2s ease;
+        }
+        
+        button:hover {
+            background-color: var(--button-hover);
+        }
+        
+        button.primary {
+            background-color: var(--accent-color);
+            color: #000;
+        }
+        
+        button.primary:hover {
+            opacity: 0.9;
+        }
+        
+        button.known {
+            background-color: var(--known-color);
+            color: #000;
+        }
+        
+        button.unknown {
+            background-color: var(--unknown-color);
+            color: #000;
+        }
+        
+        .flashcard-container {
+            width: 100%;
+            max-width: 600px;
+            height: 300px;
+            perspective: 1000px;
+            margin-bottom: 30px;
+        }
+        
+        .flashcard {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transition: transform 0.6s;
+        }
+        
+        .flashcard.flipped {
+            transform: rotateY(180deg);
+        }
+        
+        .card-face {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            backface-visibility: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+            border-radius: 12px;
+            background-color: var(--card-bg);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            font-size: 1.5rem;
+            line-height: 1.5;
+        }
+        
+        .card-back {
+            transform: rotateY(180deg);
+        }
+        
+        .card-index {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
+
+        .card-status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 0.8rem;
+            color: var(--known-color);
+        }
+        
+        .card-status.unknown {
+            color: var(--unknown-color);
+        }
+        
+        footer {
+            margin-top: auto;
+            padding: 20px;
+            text-align: center;
+            font-size: 0.9rem;
+            opacity: 0.7;
+        }
+
+        @media (max-width: 600px) {
+            .flashcard-container {
+                height: 250px;
+            }
+            
+            .card-face {
+                font-size: 1.2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Japanese Flashcards</h1>
+        <p>Click the card to flip it, or use the buttons below to navigate</p>
+    </header>
+    
+    <div class="stats">
+        <div class="stat">
+            <div>Reviewed</div>
+            <div id="reviewed-count" class="stat-value">0</div>
+        </div>
+        <div class="stat">
+            <div>Known</div>
+            <div id="known-count" class="stat-value">0</div>
+        </div>
+        <div class="stat">
+            <div>Progress</div>
+            <div id="progress" class="stat-value">0%</div>
+        </div>
+    </div>
+    
+    <div class="flashcard-container">
+        <div class="flashcard" id="flashcard">
+            <div class="card-face card-front">
+                <div id="front-content"></div>
+                <div class="card-index" id="card-index"></div>
+                <div class="card-status" id="card-status"></div>
+            </div>
+            <div class="card-face card-back">
+                <div id="back-content"></div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="controls">
+        <button id="prev-btn">Previous</button>
+        <button id="next-btn">Next</button>
+        <button id="flip-btn" class="primary">Flip Card</button>
+        <button id="mark-known-btn" class="known">Mark Known</button>
+        <button id="mark-unknown-btn" class="unknown">Mark Unknown</button>
+        <button id="shuffle-btn">Shuffle</button>
+        <button id="reset-btn">Reset Progress</button>
+        <button id="unknown-only-btn">Show Unknown Only</button>
+    </div>
+    
+    <footer>
+        Fullmetal Alchemist Japanese Flashcards | Dark Mode
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Parse the CSV data from the pasted text
+            const csvData = `Front,Back
+"錬金術とは","Alchemy is"
+"物質の構造を理解し 分解し 再構築する科学技術である","a scientific technique to understand, break down, and reconstruct the structure of matter."
+"鉛から黄金を生み出すことも可能になる","It becomes possible to even create gold from lead."
+"しかし 科学である以上","However, as it is a science,"
+"そこには大自然の原則が存在した","there exist principles of nature."
+"質量が１のものからは１のものしか生み出せない","From something with a mass of 1, only something of mass 1 can be created."
+"等価交換の原則","The principle of equivalent exchange."
+"等価交換の原則は何かを得るためには","The principle of equivalent exchange is that in order to gain something,"
+"それと同等の代価が必要であることを示している","it shows that an equivalent price is necessary."
+"それは教訓なのだろうか？","Is that a lesson?"
+"人は何かの犠牲なしに何も得ることはできない","People cannot gain anything without sacrificing something."
+"持っていかれた","It's been taken away..."
+"せめて草だけでも生えてればパンに変えられるのに","If only there was grass growing, I could change it into bread..."
+"もっかい やったら置いてくからな！","If you do it again, I'll leave you behind!"
+"随分 豊かなんだな リオールの町は","This town of Lior is quite prosperous, isn't it?"
+"あの地上に生きる神の子らよ","O children of God who live on this earth,"
+"祈り 信ぜよ　さらば 救われん","pray and believe, and you shall be saved."
+"太陽神レトは汝らの足元を照らす","The sun god Leto illuminates your path."
+"私はレトの代理人にして汝らが父","I am the messenger of Leto and your father."
+"あんたら 大道芸人か何かかい？","Are you street performers or something?"
+"芸人じゃないんなら なんでまた こんな所まで？","If you're not performers, what brings you all the way out here?"
+"ちょっと 探し物をね","Just looking for something."
+"太陽神レトの代理人を知らんのか？","Don't you know the messenger of the sun god Leto?"
+"奇跡の業を お持ちなんだ","He possesses miraculous powers."
+"砂漠の中で見捨てられた この町が こんなに豊かになったのも","This town that was abandoned in the desert has become so prosperous,"
+"あのお方のおかげさ","all thanks to him."
+"僕たち 錬金術師なんです","We are alchemists."
+"エルリック兄弟っていや 結構 名が通ってんだけどね","Known as the Elric brothers, we're quite famous."
+"鋼の錬金術師 エドワード･エルリック","Edward Elric, the Fullmetal Alchemist."
+"イーストシティ辺りじゃ有名よ","He's famous in East City."
+"うわさの天才錬金術師","The rumored genius alchemist."
+"こんな鎧 着てるから 二つ名が"鋼"なのか","So you're called 'Fullmetal' because you wear that armor?"
+"誰が豆粒みてえで 目に入らないか〜！","Who are you calling a tiny bean that you can't even see?!"
+"あれ ロゼさんの恋人のお墓なんだって","I heard that's the grave of Rose's boyfriend."
+"身寄りもなくて 恋人を事故で失って","She has no family and lost her boyfriend in an accident."
+"ロゼさんは コーネロ教主の教えに すがったんだ","Rose clung to the teachings of Father Cornello."
+"死んだ者が よみがえるわけでもあるまいに","As if the dead could come back to life."
+"生き返るらしいよ","They say he can bring them back."
+"生きる者には不滅の魂を","For the living, an immortal soul."
+"死せる者には復活を","For the dead, resurrection."
+"その証しが奇跡の御業","The proof is in his miraculous works."
+"うさんくせえ","That sounds fishy."
+"どう思う？","What do you think?"
+"どうもこうも あの変成反応は錬金術でしょ","No doubt about it, that transformation reaction is alchemy."
+"だよな　それにしちゃ法則が…","Yeah, but the laws are..."
+"ありゃ どう見ても錬金術だ","That's clearly alchemy, no matter how you look at it."
+"コーネロってのはペテン野郎だな","This Cornello is a fraud."
+"錬金術ってのは無から有を生み出すわけじゃない","Alchemy doesn't create something from nothing."
+"自然界の法則に従った科学技術なんだ","It's a scientific technique that follows the laws of nature."
+"１の質量のものからは同じく１のものしかできない","From a mass of 1, only something with a mass of 1 can be created."
+"巨大なラジオを作ったり紙や木に変えることはできない","You can't make a giant radio or change it into paper or wood."
+"何かを得ようとするなら同等の代価が必要ってことだ","It means if you want to gain something, you need to pay an equivalent price."
+"だが あのおっさんは それを無視しちまってる","But that old man is ignoring that rule."
+"錬金術で あんな奇跡は起こせるんですか？","Can alchemy create such miracles?"
+"水 35リットル　炭素 20キログラム","Water, 35 liters. Carbon, 20 kilograms."
+"アンモニア ４リットル 石灰 1.5キログラム","Ammonia, 4 liters. Lime, 1.5 kilograms."
+"リン 800グラム　塩分 250グラム","Phosphorus, 800 grams. Salt, 250 grams."
+"硝石 100グラム　硫黄 80グラム","Saltpeter, 100 grams. Sulfur, 80 grams."
+"フッ素 7.5グラム　鉄 ５グラム ケイ素 ３グラム","Fluorine, 7.5 grams. Iron, 5 grams. Silicon, 3 grams."
+"その他 少量の15の元素","And 15 other elements in small quantities."
+"標準的な大人１人分として計算した場合の","When calculated for an average adult,"
+"人体の構成物質だ","these are the component materials of a human body."
+"今の科学では ここまで分かっているのに","Even though modern science understands this much,"
+"実際に人体錬成して成功した例は報告されていない","there has never been a reported case of successful human transmutation."
+"足りないものが何なのか科学者は何百年も研究を続けている","Scientists have been researching for hundreds of years what might be missing."
+"ただ祈って待ち続けるより有意義な努力なんじゃないかな","Isn't that a more meaningful effort than just praying and waiting?"
+"ちなみに この成分材料は","By the way, these materials"
+"市場に行けば 子供の小遣いでも全部 買えちまうぞ","can all be bought with a child's allowance at the market."
+"人間てのは お安くできてんな","Humans are made pretty cheaply, aren't they?"
+"人は物じゃありません！神を冒涜するのですか？","People are not things! Are you blaspheming against God?"
+"錬金術師ってのは科学者だからな","Alchemists are scientists, you know."
+"神様なんて曖昧なもの信じちゃいないのさ","We don't believe in ambiguous things like gods."
+"その俺たちが神に いちばん近い所にいるなんて","And yet we're the closest to being gods."
+"皮肉なもんだ","How ironic."
+"あなたは 神ではありません","You are not God."
+"太陽も神じゃない　高熱の塊だ","The sun isn't a god either. It's just a mass of high heat."
+"太陽に近づき過ぎれば燃え尽きるだけ","If you get too close to the sun, you'll just burn up."
+"伝説の中だけの代物といわれる幻の術法増幅器","A legendary amplifier of alchemical techniques, said to exist only in legends..."
+"賢者の石","The Philosopher's Stone"
+"単刀直入に言う 賢者の石をよこしな","I'll get straight to the point. Hand over the Philosopher's Stone."
+"そうすりゃ 町の連中には何も言わないでおいてやる","If you do, I won't say anything to the people of this town."
+"私から これを奪おうというのか？","You're trying to take this from me?"
+"私の奇跡の御業がなくなれば この町は どうなるのかな？","What will happen to this town if my miraculous works disappear?"
+"私は内乱で滅びかけていた この町をよみがえらせた","I revived this town that was on the verge of destruction from civil war."
+"水を生み ワインに変え 建物を造り 人々に金さえも与えた","I created water, changed it to wine, built buildings, and even gave people gold."
+"私は神の代理人だ！","I am God's messenger!"
+"お前は この町の人々から神を奪うつもりかね？","Do you intend to take away God from the people of this town?"
+"そんなに軍の命令は絶対か？","Is the military's order so absolute?"
+"軍の命令なんて どうでもいい","I don't care about the military's orders."
+"俺たちには それが必要だ！","We need it!"
+"私たちから希望を奪うって知ってそれでも？","Even knowing you'll take away our hope, you still...?"
+"賢者の石の力を見ていただくとしよう","Let me show you the power of the Philosopher's Stone."
+"鎧は仇となったな","That armor has become your downfall."
+"その砂では錬成陣も描けまい","You can't even draw a transmutation circle in that sand."
+"賢者の石で生物同士を合成させた","I've synthesized two living beings with the Philosopher's Stone."
+"そう！ キメラだ","Yes! A chimera!"
+"こいつは 素手で やり合うには きつそうだなっと！","This looks tough to fight with bare hands!"
+"なにっ？ 錬成陣もなしに錬成を？","What? Transmutation without a circle?"
+"どうだ？","How's that?"
+"逃がすかよ！","I won't let you escape!"
+"どうした？ 猫野郎 しっかり味わえよ","What's wrong, cat-man? Get a good taste!"
+"あの爪でも切り裂けぬ脚","A leg that can't be cut even by those claws..."
+"あの牙でも砕けぬ腕だと？","An arm that can't be broken even by those fangs?"
+"ロゼ よく見ておけ！","Rose, watch closely!"
+"これが 人体錬成を","This is what happens to those who"
+"神様とやらの領域を侵した科人の姿だ！","violated the realm of God with human transmutation! The form of a sinner!"
+"機械の手足 オートメイル？","Mechanical limbs... automail?"
+"貴様 人体錬成を 最大の禁忌を犯しおったな","You committed human transmutation, the greatest taboo."
+"あちら側に体を持っていかれおった！","Your body was taken to the other side!"
+"それゆえに こやつの称号は"鋼"","That's why his title is 'Fullmetal'."
+"鋼の錬金術師！","The Fullmetal Alchemist!"`;
+
+            // Parse CSV data
+            const lines = csvData.split('\n');
+            const cards = [];
+            
+            // Skip header row
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i];
+                // Find the position of the first comma that is not inside quotes
+                let commaPos = -1;
+                let inQuotes = false;
+                
+                for (let j = 0; j < line.length; j++) {
+                    if (line[j] === '"') {
+                        inQuotes = !inQuotes;
+                    } else if (line[j] === ',' && !inQuotes) {
+                        commaPos = j;
+                        break;
+                    }
+                }
+                
+                if (commaPos > -1) {
+                    let front = line.substring(0, commaPos).trim();
+                    let back = line.substring(commaPos + 1).trim();
+                    
+                    // Remove quotes if they exist
+                    if (front.startsWith('"') && front.endsWith('"')) {
+                        front = front.substring(1, front.length - 1);
+                    }
+                    
+                    if (back.startsWith('"') && back.endsWith('"')) {
+                        back = back.substring(1, back.length - 1);
+                    }
+                    
+                    cards.push({
+                        front: front,
+                        back: back,
+                        known: false
+                    });
+                }
+            }
+            
+            // Get DOM elements
+            const flashcard = document.getElementById('flashcard');
+            const frontContent = document.getElementById('front-content');
+            const backContent = document.getElementById('back-content');
+            const cardIndex = document.getElementById('card-index');
+            const cardStatus = document.getElementById('card-status');
+            const reviewedCount = document.getElementById('reviewed-count');
+            const knownCount = document.getElementById('known-count');
+            const progressEl = document.getElementById('progress');
+            const prevBtn = document.getElementById('prev-btn');
+            const nextBtn = document.getElementById('next-btn');
+            const flipBtn = document.getElementById('flip-btn');
+            const markKnownBtn = document.getElementById('mark-known-btn');
+            const markUnknownBtn = document.getElementById('mark-unknown-btn');
+            const shuffleBtn = document.getElementById('shuffle-btn');
+            const resetBtn = document.getElementById('reset-btn');
+            const unknownOnlyBtn = document.getElementById('unknown-only-btn');
+            
+            // State variables
+            let currentIndex = 0;
+            let showingUnknownOnly = false;
+            let filteredCards = [...cards];
+            
+            // Display the first card
+            updateCard();
+            
+            // Event listeners
+            flashcard.addEventListener('click', toggleFlip);
+            flipBtn.addEventListener('click', toggleFlip);
+            prevBtn.addEventListener('click', showPreviousCard);
+            nextBtn.addEventListener('click', showNextCard);
+            markKnownBtn.addEventListener('click', markCurrentCardKnown);
+            markUnknownBtn.addEventListener('click', markCurrentCardUnknown);
+            shuffleBtn.addEventListener('click', shuffleCards);
+            resetBtn.addEventListener('click', resetProgress);
+            unknownOnlyBtn.addEventListener('click', toggleUnknownOnly);
+            
+            // Key bindings
+            document.addEventListener('keydown', function(e) {
+                if (e.key === ' ' || e.key === 'Enter') {
+                    toggleFlip();
+                } else if (e.key === 'ArrowLeft') {
+                    showPreviousCard();
+                } else if (e.key === 'ArrowRight') {
+                    showNextCard();
+                } else if (e.key === 'k' || e.key === 'K') {
+                    markCurrentCardKnown();
+                } else if (e.key === 'u' || e.key === 'U') {
+                    markCurrentCardUnknown();
+                } else if (e.key === 's' || e.key === 'S') {
+                    shuffleCards();
+                }
+            });
+            
+            function updateCard() {
+                if (filteredCards.length === 0) {
+                    frontContent.textContent = "No cards to display";
+                    backContent.textContent = "Please reset filters";
+                    cardIndex.textContent = "0/0";
+                    cardStatus.textContent = "";
+                    return;
+                }
+                
+                const card = filteredCards[currentIndex];
+                frontContent.textContent = card.front;
+                backContent.textContent = card.back;
+                cardIndex.textContent = `${currentIndex + 1}/${filteredCards.length}`;
+                
+                // Update card status indicator
+                if (card.known) {
+                    cardStatus.textContent = "Known";
+                    cardStatus.className = "card-status";
+                } else {
+                    cardStatus.textContent = "Unknown";
+                    cardStatus.className = "card-status unknown";
+                }
+                
+                // Make sure card is showing front side
+                flashcard.classList.remove('flipped');
+                
+                // Update stats
+                const reviewed = cards.filter(c => c.known).length + cards.filter(c => c.reviewed && !c.known).length;
+                reviewedCount.textContent = reviewed;
+                knownCount.textContent = cards.filter(c => c.known).length;
+                const progress = cards.length > 0 ? Math.round((cards.filter(c => c.known).length / cards.length) * 100) : 0;
+                progressEl.textContent = `${progress}%`;
+            }
+            
+            function toggleFlip() {
+                flashcard.classList.toggle('flipped');
+                
+                // Mark card as reviewed if it wasn't already
+                const card = filteredCards[currentIndex];
+                if (!card.reviewed) {
+                    card.reviewed = true;
+                    updateCard(); // Update stats
+                }
+            }
+            
+            function showPreviousCard() {
+                if (currentIndex > 0) {
+                    currentIndex--;
+                    updateCard();
+                }
+            }
+            
+            function showNextCard() {
+                if (currentIndex < filteredCards.length - 1) {
+                    currentIndex++;
+                    updateCard();
+                }
+            }
+            
+            function markCurrentCardKnown() {
+                if (filteredCards.length === 0) return;
+                
+                filteredCards[currentIndex].known = true;
+                filteredCards[currentIndex].reviewed = true;
+                
+                if (showingUnknownOnly) {
+                    // Remove the card from the filtered list
+                    filteredCards.splice(currentIndex, 1);
+                    // Adjust current index if needed
+                    if (currentIndex >= filteredCards.length) {
+                        currentIndex = Math.max(0, filteredCards.length - 1);
+                    }
+                }
+                
+                updateCard();
+            }
+            
+            function markCurrentCardUnknown() {
+                if (filteredCards.length === 0) return;
+                
+                filteredCards[currentIndex].known = false;
+                filteredCards[currentIndex].reviewed = true;
+                updateCard();
+            }
+            
+            function shuffleCards() {
+                // Fisher-Yates shuffle algorithm
+                for (let i = filteredCards.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [filteredCards[i], filteredCards[j]] = [filteredCards[j], filteredCards[i]];
+                }
+                
+                currentIndex = 0;
+                updateCard();
+            }
+            
+            function resetProgress() {
+                // Reset all cards to unknown
+                cards.forEach(card => {
+                    card.known = false;
+                    card.reviewed = false;
+                });
+                
+                // Reset filters
+                showingUnknownOnly = false;
+                unknownOnlyBtn.textContent = "Show Unknown Only";
+                filteredCards = [...cards];
+                
+                currentIndex = 0;
+                updateCard();
+            }
+            
+            function toggleUnknownOnly() {
+                showingUnknownOnly = !showingUnknownOnly;
+                
+                if (showingUnknownOnly) {
+                    filteredCards = cards.filter(card => !card.known);
+                    unknownOnlyBtn.textContent = "Show All Cards";
+                } else {
+                    filteredCards = [...cards];
+                    unknownOnlyBtn.textContent = "Show Unknown Only";
+                }
+                
+                currentIndex = 0;
+                updateCard();
+            }
+        });
+    </script>
+</body>
+</html>
