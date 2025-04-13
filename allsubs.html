@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Subtitle Viewer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.5/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+
+<body class="bg-gray-900 text-gray-100">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // Cache helper functions
+    const cacheUtils = {
+      // Set data in cache with path as key
+      setCache: (path, data) => {
+        try {
+          const cacheItem = {
+            data: data,
+            timestamp: new Date().getTime(),
+            expiry: new Date().getTime() + (90 * 24 * 60 * 60 * 1000) // 90 days in milliseconds
+          };
+          localStorage.setItem(`subtitle_cache_${path}`, JSON.stringify(cacheItem));
+          return true;
+        } catch (error) {
+          console.error('Error setting cache:', error);
+          return false;
+        }
+      },
+
+      // Get data from cache if it exists and is not expired
+      getCache: (path) => {
+        try {
+          const cachedData = localStorage.getItem(`subtitle_cache_${path}`);
+          if (!cachedData) return null;
+
+          const cacheItem = JSON.parse(cachedData);
+          const now = new Date().getTime();
+
+          // Return null if cache is expired
+          if (now > cacheItem.expiry) {
+            localStorage.removeItem(`subtitle_cache_${path}`);
+            return null;
+          }
+
+          return cacheItem.data;
+        } catch (error) {
+          console.error('Error getting cache:', error);
+          return null;
+        }
+      },
+
+      // Clear all subtitle viewer cache
+      clearAllCache: () => {
+        try {
+          const keysToRemove = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key.startsWith('subtitle_cache_') || key.startsWith('subtitle_file_')) {
+              keysToRemove.push(key);
+            }
+          }
+
+          // Remove identified cache items
+          keysToRemove.forEach(key => localStorage.removeItem(key));
+          return keysToRemove.length;
+        } catch (error) {
+          console.error('Error clearing cache:', error);
+          return 0;
+        }
+      },
+
+      // Cache a file content
+      setCacheForFile: (filePath, content) => {
+        try {
+          const cacheItem = {
+            content: content,
+            timestamp: new Date().getTime(),
+            expiry: new Date().getTime() + (90 * 24 * 60 * 60 * 1000) // 90 days
+          };
+          localStorage.setItem(`subtitle_file_${filePath}`, JSON.stringify(cacheItem));
+          return true;
+        } catch (error) {
+          console.error('Error setting file cache:', error);
+          return false;
+        }
+      },
+
+      // Get cached file content
+      getCacheForFile: (filePath) => {
+        try {
+          const cachedData = localStorage.getItem(`subtitle_file_${filePath}`);
+          if (!cachedData) return null;
+
+          const cacheItem = JSON.parse(cachedData);
+          const now = new Date().getTime();
+
+          // Return null if cache is expired
+          if (now > cacheItem.expiry) {
+            localStorage.removeItem(`subtitle_file_${filePath}`);
+            return null;
+          }
+
+          return cacheItem.content;
+        } catch (error) {
+          console.error('Error getting file cache:', error);
+          return null;
+        }
+      }
+    };
+
+    // Parse SRT format to structured data with more robust parsing
+    const parseSRT = (srtContent) => {
+      console.log("Parsing SRT content...");
+      if (!srtContent || typeof srtContent !== 'string') {
+        console.log("Invalid SRT content");
+        return [];
+      }
+
+      // Normalize line endings
+      const normalizedContent = srtContent.replace(/\r\n|\r|\n/g, '\n');
+
+      // Split by double newline or by subtitle pattern
+      let blocks = normalizedContent.split(/\n\s*\n/);
+      if (blocks.length <= 1) {
+        // Try alternative - look for numbered blocks
+        blocks = normalizedContent.split(/\n(?=\d+\s*\n)/);
+      }
+
+      console.log(`Found ${blocks.length} potential subtitle blocks`);
+
+      const subtitles = [];
+
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i].trim();
+        if (!block) continue;
+
+        // Get all lines
+        const lines = block.split('\n');
+
+        // Handle blocks with only one or two lines
+        if (lines.length < 2) {
+          console.log(`Block ${i + 1} has too few lines:`, lines);
+          continue;
+        }
+
+        // Find the line with the timestamp
+        let indexLine = '';
+        let timeLine = '';
+        let textLines = [];
+
+        // First line is typically the index
+        let startLineIndex = 0;
+
+        // Try to extract index - first line that's just a number
+        if (/^\s*\d+\s*$/.test(lines[0])) {
+          indexLine = lines[0].trim();
+          startLineIndex = 1;
+        } else {
+          // If not, we'll generate an index
+          indexLine = (i + 1).toString();
+        }
+
+        // Look for the timestamp line
+        let timestampFound = false;
+        for (let j = startLineIndex; j < lines.length; j++) {
+          // Match various timestamp formats, very permissively
+          if (lines[j].includes('-->')) {
+            timeLine = lines[j];
+            textLines = lines.slice(j + 1);
+            timestampFound = true;
+            break;
+          }
+        }
+
+        if (!timestampFound) {
+          console.log(`No timestamp found in block ${i + 1}:`, lines);
+          continue;
+        }
+
+        // Now parse the timestamp line - handle various formats
+        // This regex is very permissive
+        const timeMatch = timeLine.match(/(\d+:?(?:\d+:?)?(?:\d+)?[.,]?\d*)(?:\s*-->\s*)(\d+:?(?:\d+:?)?(?:\d+)?[.,]?\d*)/);
+
+        if (!timeMatch) {
+          console.log(`Failed to match timestamp in line: "${timeLine}"`);
+          continue;
+        }
+
+        let startTime = timeMatch[1];
+        let endTime = timeMatch[2];
+
+        console.log(`Block ${i + 1} timestamps: ${startTime} --> ${endTime}`);
+
+        // Normalize timestamps
+        try {
+          // Convert both timestamps to standard format
+          const startMs = timestampToMs(startTime);
+          const endMs = timestampToMs(endTime);
+
+          // Convert back to standard format
+          startTime = formatMsToTime(startMs);
+          endTime = formatMsToTime(endMs);
+
+          // Create subtitle entry
+          subtitles.push({
+            index: parseInt(indexLine) || (i + 1),
+            startTime: startTime,
+            endTime: endTime,
+            startMs: startMs,
+            endMs: endMs,
+            text: textLines.join('\n')
+          });
+        } catch (error) {
+          console.error(`Error processing timestamps for block ${i + 1}:`, error);
+        }
+      }
+
+      console.log(`Successfully parsed ${subtitles.length} subtitles`);
+      return subtitles;
+    };
+
+    // Convert any timestamp format to milliseconds
+    const timestampToMs = (timestamp) => {
+      // Handle various formats like 00:00:00,000 or 00:00,000 or 0:0:0.0
+      timestamp = timestamp.trim();
+
+      // Replace . with , for consistency
+      timestamp = timestamp.replace(/\./g, ',');
+
+      // Split by : and ,
+      const parts = timestamp.split(/[,:]/);
+
+      console.log("Parsing timestamp:", timestamp, "Parts:", parts);
+
+      // Handle different timestamp formats based on number of parts
+      let hours = 0, minutes = 0, seconds = 0, milliseconds = 0;
+
+      if (parts.length === 4) {
+        // 00:00:00,000 format
+        hours = parseInt(parts[0]) || 0;
+        minutes = parseInt(parts[1]) || 0;
+        seconds = parseInt(parts[2]) || 0;
+        milliseconds = parseInt(parts[3]) || 0;
+      } else if (parts.length === 3) {
+        // 00:00,000 format (no hours)
+        minutes = parseInt(parts[0]) || 0;
+        seconds = parseInt(parts[1]) || 0;
+        milliseconds = parseInt(parts[2]) || 0;
+      } else if (parts.length === 2) {
+        // 00,000 format (just seconds and ms)
+        seconds = parseInt(parts[0]) || 0;
+        milliseconds = parseInt(parts[1]) || 0;
+      } else {
+        // Just seconds
+        seconds = parseInt(parts[0]) || 0;
+      }
+
+      // For milliseconds, pad right with zeros if needed
+      if (milliseconds > 0 && milliseconds < 100) {
+        // If we have 1-2 digits, treat as tens/hundreds of milliseconds
+        if (milliseconds < 10) {
+          milliseconds *= 100; // e.g., 1 becomes 100ms
+        } else {
+          milliseconds *= 10;  // e.g., 12 becomes 120ms
+        }
+      }
+
+      const total = hours * 3600000 + minutes * 60000 + seconds * 1000 + milliseconds;
+      console.log("Timestamp", timestamp, "parsed as", total, "ms");
+      return total;
+    };
+
+    // Convert milliseconds to timestamp format for display
+    const formatMsToTime = (ms) => {
+      let remaining = ms;
+
+      const hours = Math.floor(remaining / 3600000);
+      remaining -= hours * 3600000;
+
+      const minutes = Math.floor(remaining / 60000);
+      remaining -= minutes * 60000;
+
+      const seconds = Math.floor(remaining / 1000);
+      remaining -= seconds * 1000;
+
+      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')},${remaining.toString().padStart(3, '0')}`;
+    };
+
+    // Convert timestamp to milliseconds
+    const timeToMs = (timeStr) => {
+      const [time, ms] = timeStr.split(',');
+      const [hours, minutes, seconds] = time.split(':').map(Number);
+      return hours * 3600000 + minutes * 60000 + seconds * 1000 + parseInt(ms);
+    };
+
+    // Open subtitle in Jisho.org for Japanese language analysis
+    const openInDict = (text) => {
+      if (!text) return;
+
+      // Encode the text for use in a URL
+      const encodedText = encodeURIComponent(text);
+      const jishoUrl = `https://jisho.org/search/${encodedText}`;
+      const moeUrl = `https://ichi.moe/cl/qr/?q=${encodedText}&r=htr`;
+
+      // Open in a new tab
+      window.open(moeUrl, '_blank');
+    };
+
+    // Convert milliseconds to timestamp format
+    const msToTime = (ms) => {
+      let remaining = ms;
+
+      const hours = Math.floor(remaining / 3600000);
+      remaining -= hours * 3600000;
+
+      const minutes = Math.floor(remaining / 60000);
+      remaining -= minutes * 60000;
+
+      const seconds = Math.floor(remaining / 1000);
+      remaining -= seconds * 1000;
+
+      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')},${remaining.toString().padStart(3, '0')}`;
+    };
+
+    // Component for the optimized subtitle viewer
+    const SubtitlePlayerView = ({ subtitles, onBack }) => {
+      const [currentTime, setCurrentTime] = useState(0);
+      const [isPlaying, setIsPlaying] = useState(false);
+      const [speed, setSpeed] = useState(1);
+      const [fontSize, setFontSize] = useState(16);
+      const [currentSubtitle, setCurrentSubtitle] = useState(null);
+      const [isCompactMode, setIsCompactMode] = useState(false);
+      const [isAutoScroll, setIsAutoScroll] = useState(true);
+      const [showTimestamps, setShowTimestamps] = useState(true);
+      const currentIntervalRef = useRef(null);
+      const subtitleListRef = useRef(null);
+
+      // Set up the timer for subtitle playback
+      useEffect(() => {
+        if (isPlaying) {
+          // Clear any existing interval
+          if (currentIntervalRef.current) {
+            clearInterval(currentIntervalRef.current);
+          }
+
+          // Start a new interval that advances the time based on speed
+          const intervalId = setInterval(() => {
+            setCurrentTime(prevTime => prevTime + 50 * speed);
+          }, 50);
+
+          currentIntervalRef.current = intervalId;
+        } else if (currentIntervalRef.current) {
+          clearInterval(currentIntervalRef.current);
+        }
+
+        // Clean up on unmount
+        return () => {
+          if (currentIntervalRef.current) {
+            clearInterval(currentIntervalRef.current);
+          }
+        };
+      }, [isPlaying, speed]);
+
+      // Update current subtitle based on time
+      useEffect(() => {
+        const activeSub = subtitles.find(
+          sub => currentTime >= sub.startMs && currentTime <= sub.endMs
+        );
+
+        if (activeSub !== currentSubtitle) {
+          setCurrentSubtitle(activeSub);
+
+          // Auto-scroll to the current subtitle if enabled
+          if (activeSub && isAutoScroll && subtitleListRef.current) {
+            const element = document.getElementById(`subtitle-${activeSub.index}`);
+            if (element) {
+              element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }
+        }
+      }, [currentTime, subtitles, isAutoScroll]);
+
+      const handlePlayPause = () => {
+        setIsPlaying(!isPlaying);
+      };
+
+      const handleRestart = () => {
+        setCurrentTime(0);
+      };
+
+      const handleJumpBackward = () => {
+        setCurrentTime(time => Math.max(0, time - 5000)); // Jump back 5 seconds
+      };
+
+      const handleJumpForward = () => {
+        setCurrentTime(time => time + 5000); // Jump forward 5 seconds
+      };
+
+      const handleSpeedChange = (newSpeed) => {
+        setSpeed(newSpeed);
+      };
+
+      const handleFontSizeChange = (change) => {
+        setFontSize(size => Math.max(10, Math.min(36, size + change)));
+      };
+
+      const handleSeek = (e) => {
+        const percent = e.nativeEvent.offsetX / e.target.offsetWidth;
+        // Assuming the last subtitle's end time is the end of the content
+        const maxTime = subtitles.length > 0 ? subtitles[subtitles.length - 1].endMs : 0;
+        setCurrentTime(percent * maxTime);
+      };
+
+      const handleSubtitleClick = (subtitle) => {
+        setCurrentTime(subtitle.startMs);
+        if (!isPlaying) {
+          setIsPlaying(true);
+        }
+      };
+
+      const toggleCompactMode = () => {
+        setIsCompactMode(!isCompactMode);
+      };
+
+      const toggleAutoScroll = () => {
+        setIsAutoScroll(!isAutoScroll);
+      };
+
+      const toggleTimestamps = () => {
+        setShowTimestamps(!showTimestamps);
+      };
+
+      // Determine maximum time for progress bar (end of the last subtitle)
+      const maxTime = subtitles.length > 0 ? subtitles[subtitles.length - 1].endMs : 0;
+      const percentComplete = maxTime > 0 ? (currentTime / maxTime) * 100 : 0;
+
+      return (
+        <div className="flex flex-col h-full">
+          {/* Header with controls */}
+          <div className="bg-gray-800 p-3 flex justify-between items-center">
+            <button
+              onClick={onBack}
+              className="px-2 py-1 bg-gray-700 rounded hover:bg-gray-600 flex items-center"
+            >
+              <span className="mr-1">←</span> Back
+            </button>
+
+            <div className="flex items-center space-x-2 text-sm">
+              <button
+                onClick={() => openInDict(currentSubtitle.text)}
+                className="mt-2 bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
+              >
+                Look up
+              </button>
+              <button
+                onClick={toggleCompactMode}
+                className={`px-2 py-1 rounded ${isCompactMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-700 hover:bg-gray-600'}`}
+                title="Toggle compact mode"
+              >
+                {isCompactMode ? 'Full View' : 'Compact'}
+              </button>
+
+              <button
+                onClick={toggleAutoScroll}
+                className={`px-2 py-1 rounded ${isAutoScroll ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-700 hover:bg-gray-600'}`}
+                title="Toggle auto-scroll"
+              >
+                {isAutoScroll ? 'Auto-scroll On' : 'Auto-scroll Off'}
+              </button>
+
+              <button
+                onClick={toggleTimestamps}
+                className={`px-2 py-1 rounded ${showTimestamps ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-700 hover:bg-gray-600'}`}
+                title="Toggle timestamps"
+              >
+                {showTimestamps ? 'Hide Times' : 'Show Times'}
+              </button>
+            </div>
+          </div>
+
+          {/* Main content area */}
+          <div className={`flex ${isCompactMode ? 'flex-col' : 'flex-1 overflow-hidden'}`}>
+            {/* Current subtitle display (only shown in compact mode) */}
+            {isCompactMode && (
+              <div className="bg-black p-4 border-b border-gray-700 text-center" style={{ fontSize: `${fontSize}px` }}>
+                {currentSubtitle ? (
+                  <div>
+                    {showTimestamps && (
+                      <div className="text-gray-400 text-sm mb-1">
+                        {currentSubtitle.startTime} → {currentSubtitle.endTime}
+                      </div>
+                    )}
+                    <div
+                      className="text-white font-semibold"
+                      dangerouslySetInnerHTML={{ __html: currentSubtitle.text.replace(/\n/g, '<br/>') }}
+                    />
+                  </div>
+                ) : (
+                  <div className="text-gray-400">No subtitle at current time</div>
+                )}
+              </div>
+            )}
+
+            {/* Subtitle list area */}
+            <div className={`${isCompactMode ? '' : 'flex-1'} overflow-y-auto`} ref={subtitleListRef}>
+              <div className="p-4 space-y-2">
+                {subtitles.map(subtitle => (
+                  <div
+                    key={subtitle.index}
+                    id={`subtitle-${subtitle.index}`}
+                    className={`p-2 rounded cursor-pointer transition-colors duration-200 ${currentSubtitle && currentSubtitle.index === subtitle.index
+                      ? 'bg-blue-900 border-l-4 border-blue-500'
+                      : 'hover:bg-gray-700'
+                      }`}
+                    onClick={() => handleSubtitleClick(subtitle)}
+                    style={{ fontSize: `${fontSize}px` }}
+                  >
+                    {showTimestamps && (
+                      <div className="text-gray-400 text-xs mb-1">
+                        {subtitle.startTime} → {subtitle.endTime}
+                      </div>
+                    )}
+                    <div dangerouslySetInnerHTML={{ __html: subtitle.text.replace(/\n/g, '<br/>') }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Progress bar */}
+          <div
+            className="h-2 bg-gray-700 cursor-pointer relative"
+            onClick={handleSeek}
+          >
+            <div
+              className="h-full bg-blue-600"
+              style={{ width: `${percentComplete}%` }}
+            ></div>
+          </div>
+
+          {/* Playback controls */}
+          <div className="bg-gray-800 p-3 border-t border-gray-700">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={handleRestart}
+                  className="p-2 rounded hover:bg-gray-700"
+                  title="Restart"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M8 3a5 5 0 1 1-4.546 2.914.5.5 0 0 0-.908-.417A6 6 0 1 0 8 2v1z" />
+                    <path d="M8 4.466V.534a.25.25 0 0 0-.41-.192L5.23 2.308a.25.25 0 0 0 0 .384l2.36 1.966A.25.25 0 0 0 8 4.466z" />
+                  </svg>
+                </button>
+
+                <button
+                  onClick={handleJumpBackward}
+                  className="p-2 rounded hover:bg-gray-700"
+                  title="Back 5 seconds"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 7.5a.5.5 0 0 1 0 1H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H11.5z" />
+                  </svg>
+                </button>
+
+                <button
+                  onClick={handlePlayPause}
+                  className="p-2 rounded hover:bg-gray-700"
+                  title={isPlaying ? 'Pause' : 'Play'}
+                >
+                  {isPlaying ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                      <path d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5zm5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5z" />
+                    </svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                      <path d="M10.804 8 5 4.633v6.734L10.804 8zm.792-.696a.802.802 0 0 1 0 1.392l-6.363 3.692C4.713 12.69 4 12.345 4 11.692V4.308c0-.653.713-.998 1.233-.696l6.363 3.692z" />
+                    </svg>
+                  )}
+                </button>
+
+                <button
+                  onClick={handleJumpForward}
+                  className="p-2 rounded hover:bg-gray-700"
+                  title="Forward 5 seconds"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zM4.5 7.5a.5.5 0 0 0 0 1h5.793l-2.147 2.146a.5.5 0 0 0 .708.708l3-3a.5.5 0 0 0 0-.708l-3-3a.5.5 0 1 0-.708.708L10.293 7.5H4.5z" />
+                  </svg>
+                </button>
+
+                <div className="ml-2">
+                  <span className="text-gray-400 text-xs mr-1">Speed:</span>
+                  <select
+                    value={speed}
+                    onChange={(e) => handleSpeedChange(parseFloat(e.target.value))}
+                    className="bg-gray-700 text-white text-sm p-1 rounded border border-gray-600"
+                  >
+                    <option value="0.5">0.5x</option>
+                    <option value="0.75">0.75x</option>
+                    <option value="1">1x</option>
+                    <option value="1.25">1.25x</option>
+                    <option value="1.5">1.5x</option>
+                    <option value="2">2x</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <span className="text-gray-400 text-xs mr-1">Font:</span>
+                <button
+                  onClick={() => handleFontSizeChange(-2)}
+                  className="p-1 text-lg rounded hover:bg-gray-700 w-8 h-8 flex items-center justify-center"
+                  title="Decrease font size"
+                >
+                  <span>A-</span>
+                </button>
+                <button
+                  onClick={() => handleFontSizeChange(2)}
+                  className="p-1 text-lg rounded hover:bg-gray-700 w-8 h-8 flex items-center justify-center"
+                  title="Increase font size"
+                >
+                  <span>A+</span>
+                </button>
+              </div>
+
+              <div className="text-gray-300 text-sm">
+                {msToTime(currentTime)}
+                {maxTime > 0 && (
+                  <span> / {msToTime(maxTime)}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const SubtitleViewer = () => {
+      const [folders, setFolders] = useState([]);
+      const [files, setFiles] = useState([]);
+      const [currentPath, setCurrentPath] = useState('subtitles');
+      const [breadcrumbs, setBreadcrumbs] = useState([{ name: 'subtitles', path: 'subtitles' }]);
+      const [selectedFile, setSelectedFile] = useState(null);
+      const [fileContent, setFileContent] = useState('');
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [searchTerm, setSearchTerm] = useState('');
+      const [allItems, setAllItems] = useState([]); // Store all items for search
+      const [usingCache, setUsingCache] = useState(false);
+      const [cacheCleared, setCacheCleared] = useState(false);
+      const [parsedSubtitles, setParsedSubtitles] = useState([]);
+      const [viewMode, setViewMode] = useState('browser'); // 'browser' or 'player'
+
+      const fetchContents = async (path) => {
+        setLoading(true);
+        setError(null);
+        setUsingCache(false);
+
+        // Check for cached data first
+        const cachedData = cacheUtils.getCache(path);
+        if (cachedData) {
+          console.log(`Using cached data for ${path}`);
+          setAllItems(cachedData);
+          setFolders(cachedData.filter(item => item.type === 'dir'));
+          setFiles(cachedData.filter(item => item.type === 'file'));
+          setLoading(false);
+          setUsingCache(true);
+          return;
+        }
+
+        try {
+          const options = {
+            headers: {
+              'Accept': 'application/vnd.github.v3+json',
+              'User-Agent': 'SubtitleViewer'
+            }
+          };
+
+          // For the root 'subtitles' path, we use a special approach with tree
+          if (path === 'subtitles') {
+            // First get the main branch information
+            const branchResponse = await fetch('https://api.github.com/repos/Ajatt-Tools/kitsunekko-mirror/branches/main', options);
+
+            if (!branchResponse.ok) {
+              throw new Error(`GitHub API error: ${branchResponse.status} ${branchResponse.statusText}`);
+            }
+
+            const branchData = await branchResponse.json();
+            const rootTreeSha = branchData.commit.commit.tree.sha;
+
+            // Get the repository's root tree
+            const rootTreeResponse = await fetch(`https://api.github.com/repos/Ajatt-Tools/kitsunekko-mirror/git/trees/${rootTreeSha}`, options);
+
+            if (!rootTreeResponse.ok) {
+              throw new Error(`GitHub API error: ${rootTreeResponse.status} ${rootTreeResponse.statusText}`);
+            }
+
+            const rootTree = await rootTreeResponse.json();
+
+            // Find the subtitles folder in the root tree
+            const subtitlesNode = rootTree.tree.find(item => item.path === 'subtitles');
+
+            if (!subtitlesNode) {
+              throw new Error('Could not find subtitles folder in the repository');
+            }
+
+            // Get the subtitles tree
+            const subtitlesTreeResponse = await fetch(`https://api.github.com/repos/Ajatt-Tools/kitsunekko-mirror/git/trees/${subtitlesNode.sha}`, options);
+
+            if (!subtitlesTreeResponse.ok) {
+              throw new Error(`GitHub API error: ${subtitlesTreeResponse.status} ${subtitlesTreeResponse.statusText}`);
+            }
+
+            const subtitlesTree = await subtitlesTreeResponse.json();
+
+            // Convert tree format to contents format
+            const contentsList = subtitlesTree.tree.map(item => ({
+              name: item.path,
+              path: `subtitles/${item.path}`,
+              sha: item.sha,
+              type: item.type === 'tree' ? 'dir' : 'file',
+              download_url: item.type === 'blob' ?
+                `https://raw.githubusercontent.com/Ajatt-Tools/kitsunekko-mirror/main/subtitles/${item.path}` : null
+            }));
+
+            // Cache the data
+            cacheUtils.setCache(path, contentsList);
+
+            // Save all items for search
+            setAllItems(contentsList);
+
+            // Separate folders and files
+            const foldersList = contentsList.filter(item => item.type === 'dir');
+            const filesList = contentsList.filter(item => item.type === 'file');
+
+            setFolders(foldersList);
+            setFiles(filesList);
+          } else {
+            // For non-root paths, we still use the standard contents API
+            // This works for subfolders once we navigate into them
+            const url = `https://api.github.com/repos/Ajatt-Tools/kitsunekko-mirror/contents/${path}`;
+            const response = await fetch(url, options);
+
+            if (!response.ok) {
+              throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+            }
+
+            const contents = await response.json();
+
+            // Cache the data
+            cacheUtils.setCache(path, contents);
+
+            // Save all items for search
+            setAllItems(contents);
+
+            // Add a note about limitation if there are many items
+            if (contents.length >= 900) {
+              setError("Note: GitHub API limits results to ~1000 items. Some files may not be displayed.");
+            }
+
+            // Separate folders and files
+            const foldersList = contents.filter(item => item.type === 'dir');
+            const filesList = contents.filter(item => item.type === 'file');
+
+            setFolders(foldersList);
+            setFiles(filesList);
+          }
+        } catch (err) {
+          setError(err.message);
+          console.error('Failed to fetch repository contents:', err);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const fetchFileContent = async (file) => {
+        setLoading(true);
+        setError(null);
+        setParsedSubtitles([]);
+
+        // Check for cached file content
+        const cachedContent = cacheUtils.getCacheForFile(file.path);
+        if (cachedContent) {
+          console.log(`Using cached content for file: ${file.path}`);
+          setFileContent(cachedContent);
+
+          // Try to parse as subtitle if file extension suggests it's a subtitle
+          if (file.name.toLowerCase().endsWith('.srt') ||
+            file.name.toLowerCase().endsWith('.vtt') ||
+            file.name.toLowerCase().endsWith('.sub') ||
+            file.name.toLowerCase().endsWith('.txt')) {
+            console.log("Attempting to parse cached subtitle file:", file.name);
+            const parsed = parseSRT(cachedContent);
+            console.log("Parsed subtitles from cache:", parsed.length);
+            setParsedSubtitles(parsed);
+          }
+
+          setLoading(false);
+          return;
+        }
+
+        try {
+          const response = await fetch(file.download_url);
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
+          }
+
+          const content = await response.text();
+
+          // Cache the file content
+          cacheUtils.setCacheForFile(file.path, content);
+
+          setFileContent(content);
+
+          // Try to parse as subtitle if file extension suggests it's a subtitle
+          if (file.name.toLowerCase().endsWith('.srt') ||
+            file.name.toLowerCase().endsWith('.vtt') ||
+            file.name.toLowerCase().endsWith('.sub') ||
+            file.name.toLowerCase().endsWith('.txt')) {
+            console.log("Attempting to parse subtitle file:", file.name);
+            const parsed = parseSRT(content);
+            console.log("Parsed subtitles count:", parsed.length);
+            setParsedSubtitles(parsed);
+          }
+        } catch (err) {
+          setError(err.message);
+          console.error('Failed to fetch file content:', err);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const navigateToFolder = (folder) => {
+        setSelectedFile(null);
+        setFileContent('');
+        setParsedSubtitles([]);
+        setCurrentPath(folder.path);
+        setSearchTerm(''); // Clear search when navigating
+        setViewMode('browser');
+
+        // Update breadcrumbs
+        const pathParts = folder.path.split('/');
+        const newBreadcrumbs = [];
+        let currentPathBuilder = '';
+
+        pathParts.forEach((part, index) => {
+          currentPathBuilder += (index === 0 ? '' : '/') + part;
+          newBreadcrumbs.push({
+            name: part,
+            path: currentPathBuilder
+          });
+        });
+
+        setBreadcrumbs(newBreadcrumbs);
+        fetchContents(folder.path);
+      };
+
+      const selectFile = (file) => {
+        setSelectedFile(file);
+        setViewMode('browser'); // Reset to browser view first
+        fetchFileContent(file);
+      };
+
+      const navigateToBreadcrumb = (breadcrumb) => {
+        setSelectedFile(null);
+        setFileContent('');
+        setParsedSubtitles([]);
+        setCurrentPath(breadcrumb.path);
+        setSearchTerm(''); // Clear search when navigating
+        setViewMode('browser');
+
+        // Update breadcrumbs
+        const index = breadcrumbs.findIndex(b => b.path === breadcrumb.path);
+        setBreadcrumbs(breadcrumbs.slice(0, index + 1));
+
+        fetchContents(breadcrumb.path);
+      };
+
+      // Handle cache clearing
+      const handleClearCache = () => {
+        const itemsCleared = cacheUtils.clearAllCache();
+        setCacheCleared(true);
+
+        // Reset the notification after 3 seconds
+        setTimeout(() => {
+          setCacheCleared(false);
+        }, 3000);
+
+        // Reload current path data from API
+        fetchContents(currentPath);
+      };
+
+      // Switch to player view mode
+      const switchToPlayerView = () => {
+        console.log("Switching to player view, parsed subtitles:", parsedSubtitles.length);
+
+        // If we have subtitles, switch to player mode
+        if (parsedSubtitles.length > 0) {
+          setViewMode('player');
+        } else {
+          // Try to parse subtitles again in case they failed to parse initially
+          console.log("No subtitles found, attempting to parse again");
+          if (fileContent && selectedFile) {
+            console.log("Re-parsing subtitle file");
+            const parsed = parseSRT(fileContent);
+            console.log("Re-parsed subtitles count:", parsed.length);
+            setParsedSubtitles(parsed);
+
+            // If we got subtitles now, switch to player mode
+            if (parsed.length > 0) {
+              setViewMode('player');
+            } else {
+              alert("Could not parse any subtitles from this file. Please check if it's a valid subtitle file.");
+            }
+          } else {
+            alert("No subtitle data found. Please select a valid subtitle file.");
+          }
+        }
+      };
+
+      // Return from player view to browser view
+      const returnToBrowserView = () => {
+        setViewMode('browser');
+      };
+
+      // Filter items based on search term
+      const filterItems = () => {
+        if (!searchTerm.trim()) {
+          // If no search term, restore original lists
+          const foldersList = allItems.filter(item => item.type === 'dir');
+          const filesList = allItems.filter(item => item.type === 'file');
+          setFolders(foldersList);
+          setFiles(filesList);
+          return;
+        }
+
+        const searchLower = searchTerm.toLowerCase();
+
+        // Filter folders
+        const filteredFolders = allItems
+          .filter(item => item.type === 'dir' && item.name.toLowerCase().includes(searchLower));
+
+        // Filter files
+        const filteredFiles = allItems
+          .filter(item => item.type === 'file' && item.name.toLowerCase().includes(searchLower));
+
+        setFolders(filteredFolders);
+        setFiles(filteredFiles);
+      };
+
+      // Handle search input changes
+      const handleSearchChange = (e) => {
+        setSearchTerm(e.target.value);
+      };
+
+      // Effect for search
+      useEffect(() => {
+        filterItems();
+      }, [searchTerm]);
+
+      // Initial load
+      useEffect(() => {
+        fetchContents(currentPath);
+      }, []);
+
+      // Determine if the current file is a subtitle file
+      const isSubtitleFile = selectedFile && (
+        selectedFile.name.toLowerCase().endsWith('.srt') ||
+        selectedFile.name.toLowerCase().endsWith('.vtt') ||
+        selectedFile.name.toLowerCase().endsWith('.sub') ||
+        selectedFile.name.toLowerCase().endsWith('.ass') ||
+        selectedFile.name.toLowerCase().endsWith('.ssa') ||
+        selectedFile.name.toLowerCase().endsWith('.txt') // Some subtitle files are just .txt
+      );
+
+      return (
+        <div className="flex flex-col h-screen max-w-6xl mx-auto p-4 bg-gray-900 text-gray-100">
+          {viewMode === 'browser' ? (
+            // Browser view
+            <>
+              <div className="flex justify-between items-center mb-4">
+                <h1 className="text-2xl font-bold text-gray-100">Subtitle File Browser</h1>
+
+                {/* Cache controls */}
+                <div className="flex items-center">
+                  {usingCache && (
+                    <span className="text-xs text-gray-400 mr-2 bg-gray-800 px-2 py-1 rounded">Using cached data</span>
+                  )}
+                  <button
+                    onClick={handleClearCache}
+                    className="bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1 rounded text-sm flex items-center"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Clear Cache
+                  </button>
+                </div>
+              </div>
+
+              {/* Cache cleared notification */}
+              {cacheCleared && (
+                <div className="bg-green-900 border border-green-700 text-green-100 px-4 py-2 rounded mb-4 flex items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Cache cleared successfully
+                </div>
+              )}
+
+              {/* Breadcrumbs */}
+              <div className="flex flex-wrap items-center mb-4 text-sm">
+                {breadcrumbs.map((breadcrumb, index) => (
+                  <div key={breadcrumb.path} className="flex items-center">
+                    {index > 0 && <span className="mx-2 text-gray-400">/</span>}
+                    <button
+                      onClick={() => navigateToBreadcrumb(breadcrumb)}
+                      className="text-blue-400 hover:text-blue-300 hover:underline"
+                    >
+                      {breadcrumb.name}
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* Search bar */}
+              <div className="mb-4">
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Search files and folders..."
+                    value={searchTerm}
+                    onChange={handleSearchChange}
+                    className="w-full p-2 pl-10 rounded bg-gray-800 border border-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100"
+                  />
+                  <div className="absolute left-3 top-2.5 text-gray-400">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                      <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+                    </svg>
+                  </div>
+                  {searchTerm && (
+                    <button
+                      onClick={() => setSearchTerm('')}
+                      className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-100"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {error && (
+                <div className="bg-red-900 border border-red-700 text-red-100 px-4 py-3 rounded mb-4">
+                  Error: {error}
+                </div>
+              )}
+
+              <div className="flex flex-1 gap-4 overflow-hidden">
+                {/* Folder and file list */}
+                <div className="w-1/3 overflow-y-auto border border-gray-700 rounded p-4 bg-gray-800">
+                  {loading && !selectedFile ? (
+                    <div className="flex justify-center items-center h-full">
+                      <p className="text-gray-400">Loading...</p>
+                    </div>
+                  ) : (
+                    <>
+                      {folders.length > 0 && (
+                        <div className="mb-4">
+                          <h2 className="font-bold mb-2 text-gray-200">Folders</h2>
+                          <ul className="space-y-1">
+                            {folders.map(folder => (
+                              <li key={folder.path}>
+                                <button
+                                  onClick={() => navigateToFolder(folder)}
+                                  className="flex items-center text-left w-full p-2 hover:bg-gray-700 rounded"
+                                >
+                                  <span className="mr-2">📁</span>
+                                  {folder.name}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {files.length > 0 && (
+                        <div>
+                          <h2 className="font-bold mb-2 text-gray-200">Files</h2>
+                          <ul className="space-y-1">
+                            {files.map(file => (
+                              <li key={file.path}>
+                                <button
+                                  onClick={() => selectFile(file)}
+                                  className={`flex items-center text-left w-full p-2 hover:bg-gray-700 rounded ${selectedFile && selectedFile.path === file.path ? 'bg-gray-700' : ''}`}
+                                >
+                                  <span className="mr-2">📄</span>
+                                  {file.name}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {folders.length === 0 && files.length === 0 && !loading && (
+                        <p className="text-gray-400 text-center my-8">
+                          {searchTerm ? "No matches found for your search" : "This folder is empty"}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* File content viewer */}
+                <div className="w-2/3 border border-gray-700 rounded p-4 overflow-y-auto bg-gray-800">
+                  {selectedFile ? (
+                    <>
+                      <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-700">
+                        <h2 className="font-bold text-gray-200">{selectedFile.name}</h2>
+
+                        {/* Show player mode button if it's a subtitle file */}
+                        {isSubtitleFile && (
+                          <div>
+                            <button
+                              onClick={switchToPlayerView}
+                              className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm flex items-center"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              Player View {parsedSubtitles.length > 0 ? `(${parsedSubtitles.length} subtitles)` : ''}
+                            </button>
+                            {parsedSubtitles.length === 0 && (
+                              <div className="mt-2 text-yellow-500 text-xs">
+                                Note: No valid subtitles found or subtitles still loading
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {loading ? (
+                        <div className="flex justify-center items-center h-32">
+                          <p className="text-gray-400">Loading file content...</p>
+                        </div>
+                      ) : (
+                        <pre className="whitespace-pre-wrap font-mono text-sm text-gray-300">{fileContent}</pre>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex justify-center items-center h-full text-gray-400">
+                      <p>Select a file to view its content</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            // Player view
+            <SubtitlePlayerView
+              subtitles={parsedSubtitles}
+              onBack={returnToBrowserView}
+            />
+          )}
+        </div>
+      );
+    };
+
+    // Render the app
+    ReactDOM.render(
+      <SubtitleViewer />,
+      document.getElementById('root')
+    );
+  </script>
+</body>
+
+</html>
